@@ -40,6 +40,10 @@
 		<Unit filename="main.c">
 			<Option compilerVar="CC" />
 		</Unit>
+		<Unit filename="rbuf.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="rbuf.h" />
 		<Extensions>
 			<code_completion />
 			<envvars />

@@ -3,9 +3,7 @@
 
 simple ring buffer
 
-+ it will over write the data when wr_index catchs the rd_index
-    > the pop handler MUST be faster than push handler.
++ pop api will return error when buffer is empty
 
-+ it may pop no data
-    > you should verify the data and length of pop api are 0 or not.
++ push api will return error when buffer is full.
 
