@@ -1,201 +1,189 @@
-
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <pthread.h>
-
 #include <windows.h>
-//=============================================================================
-//                  Constant Definition
-//=============================================================================
 
-//=============================================================================
-//                  Macro Definition
-//=============================================================================
-#define err(str, ...)       do{printf("[%s:%d] " str, __func__, __LINE__, ## __VA_ARGS__); while(1);}while(0)
-//=============================================================================
-//                  Structure Definition
-//=============================================================================
-typedef struct rbuf
-{
-    unsigned long   r_ptr;
-    unsigned long   w_ptr;
-    unsigned long   start_ptr;
-    unsigned long   end_ptr;
-} rbuf_t;
-//=============================================================================
-//                  Global Data Definition
-//=============================================================================
+#include "pthread.h"
+#include "rbuf_opt.h"
 
-//=============================================================================
-//                  Private Function Definition
-//=============================================================================
-static int
-rbuf_init(
-    rbuf_t          *pHRbuf,
-    unsigned long   start_ptr,
-    unsigned long   buf_size)
-{
-    if( !pHRbuf )   return -1;
+#define _FOURCC(a, b, c, d)         (((d) << 24) | ((c) <<16) | ((b) << 8) | (a))
+#define err(st, args...)            do{printf("%s[%d] " st, __func__, __LINE__, ##args); while(1);}while(0)
 
-    pHRbuf->r_ptr     = start_ptr;
-    pHRbuf->w_ptr     = start_ptr;
-    pHRbuf->start_ptr = start_ptr;
-    pHRbuf->end_ptr   = start_ptr + buf_size;
-    return 0;
-}
+#define MAX_BUF_SIZE            (10 <<10)
 
-static int
-rbuf_push(
-    rbuf_t          *pHRbuf,
-    unsigned long   pData,
-    unsigned long   data_size)
-{
-    unsigned long    w_ptr = pHRbuf->w_ptr;
+#define CMD_EOS                 _FOURCC('E', 'O', 'S', ' ')
 
-    if( (w_ptr + data_size) > pHRbuf->end_ptr )
-    {
-        int     remain = pHRbuf->end_ptr - w_ptr;
-
-        if( remain > 0 )    memcpy((void*)w_ptr, (void*)pData, remain);
-
-        pData += remain;
-        memcpy((void*)pHRbuf->start_ptr, (void*)pData, data_size - remain);
-        w_ptr = pHRbuf->start_ptr + data_size - remain;
-    }
-    else
-    {
-        memcpy((void*)w_ptr, (void*)pData, data_size);
-        w_ptr += data_size;
-    }
-    pHRbuf->w_ptr = w_ptr;
-    return 0;
-}
-
-
-static int
-rbuf_pop(
-    rbuf_t          *pHRbuf,
-    unsigned long   *pData,
-    unsigned long   *pData_size)
-{
-    unsigned long    w_ptr = pHRbuf->w_ptr;
-    unsigned long    r_ptr = pHRbuf->r_ptr;
-    // align writing index
-    if( w_ptr < r_ptr )
-    {
-        *pData_size = pHRbuf->end_ptr - r_ptr;
-        *pData      = r_ptr;
-
-        r_ptr = pHRbuf->start_ptr;
-    }
-    else
-    {
-        *pData_size = w_ptr - r_ptr;
-        *pData      = (*pData_size) ? r_ptr : 0;
-        r_ptr += (*pData_size);
-    }
-
-    pHRbuf->r_ptr = r_ptr;
-    return 0;
-}
-//=============================================================================
-//                  Public Function Definition
-//=============================================================================
-static int      g_eof = 0;
-static rbuf_t   g_rbuf = {0};
+static unsigned char    g_rbuf[MAX_BUF_SIZE] = {0};
+static rb_operator_t    g_hRB = {0};
 
 static void*
-_task_read(void *argv)
+_rb_write(void *argv)
 {
-    int     *pIs_running = (int*)argv;
-    char    *pFilename = "dump.jpg";
-    FILE    *fout = 0;
+    int             sleep_ms = 1;
+    FILE            *fin = 0;
+    unsigned char   buf[512] = {0};
 
-    do {
-        if( !(fout = fopen(pFilename, "wb")) )
+    if( !(fin = fopen("./test.jpg", "rb")) )
+    {
+        err("open '%s' fail\n", "./test.jpg");
+        return 0;
+    }
+
+    while(1)
+    {
+        rb_err_t        rb_err = RB_ERR_OK;
+        int             data_size = (rand() >> 10) & 0x1FF;
+
+        if( fin && feof(fin) )
         {
-            err("open %s fail \n", pFilename);
-            break;
+            fclose(fin);
+            fin = 0;
+
+            memset(buf, 0xFF, sizeof(buf));
+            rb_opt_update_w(&g_hRB, buf, 8); // It MUST send more than 8 bytes data
         }
 
-        while( *pIs_running )
+        if( fin )
         {
-            unsigned long   data = 0;
-            unsigned long   len = 0;
+            data_size = (data_size) ? data_size : 512;
+            data_size = fread(buf, 1, data_size, fin);
 
-            rbuf_pop(&g_rbuf, &data, &len);
-            if( data && len )
+            while( (rb_err = rb_opt_update_w(&g_hRB, buf, data_size)) )
             {
-                fwrite((void*)data, 1, len, fout);
+                switch( rb_err )
+                {
+                    case RB_ERR_NO_SPACE:
+                        printf("no space \n");
+                        break;
+                    case RB_ERR_W_CATCH_R:
+                        printf("w_idx catch r_idx \n");
+                        break;
+                    case RB_ERR_INVALID_PARAM:
+                        printf("invalid param\n");
+                        break;
+                    default:
+                        printf("unknown error %d \n", rb_err);
+                        break;
+                }
+
+                Sleep(1);
             }
-
-            Sleep(1);
         }
-    } while(0);
 
-    if( fout )      fclose(fout);
+        sleep_ms = (rand() >> 15) & 0xF;
+        sleep_ms = (sleep_ms) ? sleep_ms : 1;
+//        Sleep(sleep_ms);
+    }
+
     pthread_exit(0);
-    return 0;
+    return NULL;
+}
+
+static int
+_get_data_size(
+    rb_data_info_t  *pInfo)
+{
+    static int      end_flag = 0;
+    int             rval = 0;
+    unsigned char   *pTmp = pInfo->r_ptr + (pInfo->data_size - 4);
+
+    if( end_flag && pInfo->read_idx == RB_READ_TYPE_FETCH )
+    {
+        end_flag = 0;
+        pInfo->is_dummy = 1;
+        return CMD_EOS;
+    }
+
+    if( pTmp[0] == 0xFF && pTmp[1] == 0xFF && pTmp[2] == 0xFF && pTmp[3] == 0xFF )
+    {
+        pInfo->data_size = pInfo->data_size - 4;
+        end_flag = 1;
+    }
+
+    pInfo->data_size &= ~(0x3);
+    printf("data size = %d\n", pInfo->data_size);
+    pInfo->is_dummy = 0;
+    return rval;
 }
 
 static void*
-_task_write(void *argv)
+_rb_read(void *argv)
 {
-    int     *pIs_running = (int*)argv;
-    char    *pFilename = "test.jpg";
-    FILE    *fin = 0;
+    int             sleep_ms = 1;
+    FILE            *fout = 0;
 
-    do {
-        if( !(fin = fopen(pFilename, "rb")) )
+    if( !(fout = fopen("dump.jpg", "wb")) )
+    {
+        err("open '%s' fail \n", "dump.jpg");
+        return 0;
+    }
+
+    while(1)
+    {
+        rb_err_t        rb_err = RB_ERR_OK;
+        unsigned char   *pData = 0;
+        unsigned int    data_size = 0;
+
+        rb_err = rb_opt_update_r(&g_hRB, RB_READ_TYPE_FETCH, &pData, &data_size, _get_data_size);
+        switch( rb_err )
         {
-            err("open %s fail \n", pFilename);
-            break;
-        }
-
-        while( *pIs_running )
-        {
-            unsigned char   raw[200] = {0};
-            int             len = sizeof(raw);
-
-            len = fread(raw, 1, len, fin);
-            if( len == 0 )
-            {
-                g_eof = 1;
+            case RB_ERR_OK:
+                if( data_size && data_size != RB_INVALID_SIZE && fout )
+                {
+                    fwrite(pData, 1, data_size, fout);
+                }
                 break;
-            }
-
-            rbuf_push(&g_rbuf, (unsigned long)raw, len);
-
-            Sleep(5);
+            case RB_ERR_NO_SPACE:
+                printf("no space \n");
+                break;
+            case RB_ERR_W_CATCH_R:
+                printf("w_idx catch r_idx \n");
+                break;
+            case RB_ERR_INVALID_PARAM:
+                printf("invalid param\n");
+                break;
+            case CMD_EOS:
+                if( fout )
+                {
+                    fclose(fout);
+                    fout = 0;
+                }
+                break;
+            case RB_ERR_R_CATCH_W:
+                break;
+            case RB_ERR_NO_DATA:
+                break;
+            default:
+                printf("unknown error %d \n", rb_err);
+                break;
         }
-    } while(0);
 
-    if( fin )   fclose(fin);
+
+        sleep_ms = (rand() >> 15) & 0xF;
+        sleep_ms = (sleep_ms) ? sleep_ms : 1;
+        Sleep(2);
+
+        data_size = 0;
+        rb_opt_update_r(&g_hRB, RB_READ_TYPE_REMOVE, &pData, &data_size, _get_data_size);
+    }
+
     pthread_exit(0);
-    return 0;
+    return NULL;
 }
+
 
 int main()
 {
-    int             is_running = 1;
-    pthread_t       td_r, td_w;
-    unsigned char   buf[1024] = {0};
+    pthread_t   t1, t2;
 
-    srand(time(0));
+    rb_opt_init(&g_hRB, g_rbuf, MAX_BUF_SIZE);
 
-    rbuf_init(&g_rbuf, (unsigned long)buf, sizeof(buf));
+    srand(time(NULL));
 
-    pthread_create(&td_r, 0, _task_read, &is_running);
-    pthread_create(&td_w, 0, _task_write, &is_running);
+    pthread_create(&t1, 0, _rb_write, 0);
+    pthread_create(&t2, 0, _rb_read, 0);
 
-    while( g_eof == 0 )
-        Sleep(5);
-
-    is_running = 0;
-    pthread_join(td_r, 0);
-    pthread_join(td_w, 0);
+    while(1)        Sleep(1000);
 
     return 0;
 }
